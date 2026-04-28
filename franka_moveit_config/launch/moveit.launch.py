@@ -21,7 +21,7 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription,
                             Shutdown)
-from launch.conditions import IfCondition
+from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command, FindExecutable, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -172,6 +172,11 @@ def generate_launch_description():
         'config',
         'panda_ros_controllers.yaml',
     )
+    ros2_controllers_path_fake = os.path.join(
+        get_package_share_directory('franka_moveit_config'),
+        'config',
+        'panda_ros_controllers_fake.yaml',
+    )
     ros2_control_node = Node(
         package='controller_manager',
         executable='ros2_control_node',
@@ -182,6 +187,19 @@ def generate_launch_description():
             'stderr': 'screen',
         },
         on_exit=Shutdown(),
+        condition=UnlessCondition(use_fake_hardware),
+    )
+    ros2_control_node_fake = Node(
+        package='controller_manager',
+        executable='ros2_control_node',
+        parameters=[robot_description, ros2_controllers_path_fake],
+        remappings=[('joint_states', 'franka/joint_states')],
+        output={
+            'stdout': 'screen',
+            'stderr': 'screen',
+        },
+        on_exit=Shutdown(),
+        condition=IfCondition(use_fake_hardware),
     )
 
     # Load controllers
@@ -197,17 +215,17 @@ def generate_launch_description():
 
     # Warehouse mongodb server
     db_config = LaunchConfiguration('db')
-    mongodb_server_node = Node(
-        package='warehouse_ros_mongo',
-        executable='mongo_wrapper_ros.py',
-        parameters=[
-            {'warehouse_port': 33829},
-            {'warehouse_host': 'localhost'},
-            {'warehouse_plugin': 'warehouse_ros_mongo::MongoDatabaseConnection'},
-        ],
-        output='screen',
-        condition=IfCondition(db_config)
-    )
+    # mongodb_server_node = Node(
+    #     package='warehouse_ros_mongo',
+    #     executable='mongo_wrapper_ros.py',
+    #     parameters=[
+    #         {'warehouse_port': 33829},
+    #         {'warehouse_host': 'localhost'},
+    #         {'warehouse_plugin': 'warehouse_ros_mongo::MongoDatabaseConnection'},
+    #     ],
+    #     output='screen',
+    #     condition=IfCondition(db_config)
+    # )
 
     joint_state_publisher = Node(
         package='joint_state_publisher',
@@ -226,7 +244,7 @@ def generate_launch_description():
         description='Use fake hardware')
     load_gripper_arg = DeclareLaunchArgument(
             load_gripper_parameter_name,
-            default_value='false',
+            default_value='true',
             description='Use Franka Gripper as an end-effector, otherwise, the robot is loaded '
                         'without an end-effector.')
     
@@ -252,7 +270,8 @@ def generate_launch_description():
          robot_state_publisher,
          run_move_group_node,
          ros2_control_node,
-         mongodb_server_node,
+         ros2_control_node_fake,
+        #  mongodb_server_node,
          joint_state_publisher,
          gripper_launch_file
          ]
