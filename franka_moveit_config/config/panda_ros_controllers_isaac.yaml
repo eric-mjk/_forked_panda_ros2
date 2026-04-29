@@ -1,6 +1,6 @@
 controller_manager:
   ros__parameters:
-    update_rate: 100  # Hz — topic bridge doesn't need 1kHz
+    update_rate: 100
 
     panda_arm_controller:
       type: joint_trajectory_controller/JointTrajectoryController
@@ -24,3 +24,4 @@ panda_arm_controller:
       - panda_joint5
       - panda_joint6
       - panda_joint7
+    allow_nonzero_velocity_at_trajectory_end: true

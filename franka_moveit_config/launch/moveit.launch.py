@@ -19,8 +19,7 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import (DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription,
-                            Shutdown)
+from launch.actions import (DeclareLaunchArgument, IncludeLaunchDescription, Shutdown)
 from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import (Command, FindExecutable, LaunchConfiguration,
@@ -85,6 +84,12 @@ def generate_launch_description():
         'franka_moveit_config', 'config/kinematics.yaml'
     )
 
+    joint_limits_yaml = {
+        'robot_description_planning': load_yaml(
+            'franka_moveit_config', 'config/joint_limits.yaml'
+        )
+    }
+
     # Planning Functionality
     ompl_planning_pipeline_config = {
         'move_group': {
@@ -104,11 +109,18 @@ def generate_launch_description():
     ompl_planning_pipeline_config['move_group'].update(ompl_planning_yaml)
 
     # Trajectory Execution Functionality
-    moveit_simple_controllers_yaml = load_yaml(
-        'franka_moveit_config', 'config/panda_controllers.yaml'
-    )
-    moveit_controllers = {
-        'moveit_simple_controller_manager': moveit_simple_controllers_yaml,
+    # Two controller configs: with gripper (load_gripper:=true) and without (load_gripper:=false).
+    # Using the wrong one crashes move_group when joints referenced in the config don't exist
+    # in the robot model.
+    moveit_controllers_with_gripper = {
+        'moveit_simple_controller_manager': load_yaml(
+            'franka_moveit_config', 'config/panda_controllers.yaml'),
+        'moveit_controller_manager': 'moveit_simple_controller_manager'
+                                     '/MoveItSimpleControllerManager',
+    }
+    moveit_controllers_no_gripper = {
+        'moveit_simple_controller_manager': load_yaml(
+            'franka_moveit_config', 'config/panda_controllers_no_gripper.yaml'),
         'moveit_controller_manager': 'moveit_simple_controller_manager'
                                      '/MoveItSimpleControllerManager',
     }
@@ -117,7 +129,7 @@ def generate_launch_description():
         'moveit_manage_controllers': True,
         'trajectory_execution.allowed_execution_duration_scaling': 1.2,
         'trajectory_execution.allowed_goal_duration_margin': 0.5,
-        'trajectory_execution.allowed_start_tolerance': 0.01,
+        'trajectory_execution.allowed_start_tolerance': 0.05,
     }
 
     planning_scene_monitor_parameters = {
@@ -127,20 +139,30 @@ def generate_launch_description():
         'publish_transforms_updates': True,
     }
 
+    common_move_group_params = [
+        robot_description,
+        robot_description_semantic,
+        kinematics_yaml,
+        joint_limits_yaml,
+        ompl_planning_pipeline_config,
+        trajectory_execution,
+        planning_scene_monitor_parameters,
+    ]
+
     # Start the actual move_group node/action server
     run_move_group_node = Node(
         package='moveit_ros_move_group',
         executable='move_group',
         output='screen',
-        parameters=[
-            robot_description,
-            robot_description_semantic,
-            kinematics_yaml,
-            ompl_planning_pipeline_config,
-            trajectory_execution,
-            moveit_controllers,
-            planning_scene_monitor_parameters,
-        ],
+        parameters=common_move_group_params + [moveit_controllers_with_gripper],
+        condition=IfCondition(load_gripper),
+    )
+    run_move_group_node_no_gripper = Node(
+        package='moveit_ros_move_group',
+        executable='move_group',
+        output='screen',
+        parameters=common_move_group_params + [moveit_controllers_no_gripper],
+        condition=UnlessCondition(load_gripper),
     )
 
     # RViz
@@ -158,6 +180,7 @@ def generate_launch_description():
             robot_description_semantic,
             ompl_planning_pipeline_config,
             kinematics_yaml,
+            joint_limits_yaml,
         ],
     )
 
@@ -222,8 +245,8 @@ def generate_launch_description():
     ros2_control_node_isaac = Node(
         package='controller_manager',
         executable='ros2_control_node',
-        parameters=[robot_description, ros2_controllers_path_isaac],
-        remappings=[('joint_states', 'franka/joint_states')],
+        parameters=[ros2_controllers_path_isaac],
+        remappings=[('/controller_manager/robot_description', '/robot_description')],
         output={
             'stdout': 'screen',
             'stderr': 'screen',
@@ -233,15 +256,20 @@ def generate_launch_description():
     )
 
     # Load controllers
-    load_controllers = []
-    for controller in ['panda_arm_controller', 'joint_state_broadcaster']:
-        load_controllers += [
-            ExecuteProcess(
-                cmd=['ros2 run controller_manager spawner {}'.format(controller)],
-                shell=True,
-                output='screen',
-            )
-        ]
+    load_controllers = [
+        Node(
+            package='controller_manager',
+            executable='spawner',
+            arguments=['panda_arm_controller', '-c', '/controller_manager'],
+            output='screen',
+        ),
+        Node(
+            package='controller_manager',
+            executable='spawner',
+            arguments=['joint_state_broadcaster', '-c', '/controller_manager'],
+            output='screen',
+        ),
+    ]
 
     # Warehouse mongodb server
     db_config = LaunchConfiguration('db')
@@ -257,12 +285,15 @@ def generate_launch_description():
     #     condition=IfCondition(db_config)
     # )
 
+    # In Isaac mode the joint_state_broadcaster publishes /joint_states directly;
+    # this node is only needed for real/fake hardware where sources are remapped.
     joint_state_publisher = Node(
         package='joint_state_publisher',
         executable='joint_state_publisher',
         name='joint_state_publisher',
         parameters=[
             {'source_list': ['franka/joint_states', 'panda_gripper/joint_states'], 'rate': 30}],
+        condition=UnlessCondition(use_isaac_sim),
     )
     use_isaac_sim_arg = DeclareLaunchArgument(
         'use_isaac_sim',
@@ -306,12 +337,13 @@ def generate_launch_description():
          rviz_node,
          robot_state_publisher,
          run_move_group_node,
+         run_move_group_node_no_gripper,
          ros2_control_node,
          ros2_control_node_fake,
          ros2_control_node_isaac,
         #  mongodb_server_node,
          joint_state_publisher,
-         gripper_launch_file
+         gripper_launch_file,
          ]
         + load_controllers
     )
