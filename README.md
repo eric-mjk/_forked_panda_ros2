@@ -1,5 +1,10 @@
+## This is a forked repo
 
-[multipanda-ros2]: https://github.com/tenfoldpaper/multipanda_ros2
+Original repo
+
+panda-ros2 :  `https://github.com/tenfoldpaper/panda_ros2`
+
+multipanda-ros2 : `https://github.com/tenfoldpaper/multipanda_ros2`
 
 
 
