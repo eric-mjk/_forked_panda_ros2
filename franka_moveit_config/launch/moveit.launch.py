@@ -23,7 +23,8 @@ from launch.actions import (DeclareLaunchArgument, ExecuteProcess, IncludeLaunch
                             Shutdown)
 from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import Command, FindExecutable, LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import (Command, FindExecutable, LaunchConfiguration,
+                                   PathJoinSubstitution, PythonExpression)
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 import yaml
@@ -50,6 +51,7 @@ def generate_launch_description():
     use_fake_hardware = LaunchConfiguration(use_fake_hardware_parameter_name)
     load_gripper = LaunchConfiguration(load_gripper_parameter_name)
     fake_sensor_commands = LaunchConfiguration(fake_sensor_commands_parameter_name)
+    use_isaac_sim = LaunchConfiguration('use_isaac_sim')
 
 
     # Command-line arguments
@@ -64,7 +66,8 @@ def generate_launch_description():
     robot_description_config = Command(
         [FindExecutable(name='xacro'), ' ', franka_xacro_file, ' hand:=', load_gripper,
          ' robot_ip:=', robot_ip, ' use_fake_hardware:=', use_fake_hardware,
-         ' fake_sensor_commands:=', fake_sensor_commands])
+         ' fake_sensor_commands:=', fake_sensor_commands,
+         ' use_isaac_sim:=', use_isaac_sim])
 
     robot_description = {'robot_description': robot_description_config}
 
@@ -177,6 +180,21 @@ def generate_launch_description():
         'config',
         'panda_ros_controllers_fake.yaml',
     )
+    ros2_controllers_path_isaac = os.path.join(
+        get_package_share_directory('franka_moveit_config'),
+        'config',
+        'panda_ros_controllers_isaac.yaml',
+    )
+
+    # Three-way conditions (PythonExpression is safe in Humble;
+    # AndSubstitution/NotSubstitution only exist in Iron+)
+    use_real_hardware = PythonExpression(
+        ["'true' if '", use_fake_hardware, "' == 'false' and '",
+         use_isaac_sim, "' == 'false' else 'false'"])
+    use_fake_only = PythonExpression(
+        ["'true' if '", use_fake_hardware, "' == 'true' and '",
+         use_isaac_sim, "' == 'false' else 'false'"])
+
     ros2_control_node = Node(
         package='controller_manager',
         executable='ros2_control_node',
@@ -187,7 +205,7 @@ def generate_launch_description():
             'stderr': 'screen',
         },
         on_exit=Shutdown(),
-        condition=UnlessCondition(use_fake_hardware),
+        condition=IfCondition(use_real_hardware),
     )
     ros2_control_node_fake = Node(
         package='controller_manager',
@@ -199,7 +217,19 @@ def generate_launch_description():
             'stderr': 'screen',
         },
         on_exit=Shutdown(),
-        condition=IfCondition(use_fake_hardware),
+        condition=IfCondition(use_fake_only),
+    )
+    ros2_control_node_isaac = Node(
+        package='controller_manager',
+        executable='ros2_control_node',
+        parameters=[robot_description, ros2_controllers_path_isaac],
+        remappings=[('joint_states', 'franka/joint_states')],
+        output={
+            'stdout': 'screen',
+            'stderr': 'screen',
+        },
+        on_exit=Shutdown(),
+        condition=IfCondition(use_isaac_sim),
     )
 
     # Load controllers
@@ -234,9 +264,15 @@ def generate_launch_description():
         parameters=[
             {'source_list': ['franka/joint_states', 'panda_gripper/joint_states'], 'rate': 30}],
     )
+    use_isaac_sim_arg = DeclareLaunchArgument(
+        'use_isaac_sim',
+        default_value='false',
+        description='Use Isaac Sim as physics backend via topic_based_ros2_control')
+
     robot_arg = DeclareLaunchArgument(
         robot_ip_parameter_name,
-        description='Hostname or IP address of the robot.')
+        default_value='',
+        description='Hostname or IP address of the robot (not required for fake/Isaac Sim modes).')
 
     use_fake_hardware_arg = DeclareLaunchArgument(
         use_fake_hardware_parameter_name,
@@ -263,6 +299,7 @@ def generate_launch_description():
     return LaunchDescription(
         [robot_arg,
          use_fake_hardware_arg,
+         use_isaac_sim_arg,
          fake_sensor_commands_arg,
          load_gripper_arg,
          db_arg,
@@ -271,6 +308,7 @@ def generate_launch_description():
          run_move_group_node,
          ros2_control_node,
          ros2_control_node_fake,
+         ros2_control_node_isaac,
         #  mongodb_server_node,
          joint_state_publisher,
          gripper_launch_file
