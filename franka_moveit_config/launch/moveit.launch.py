@@ -19,7 +19,7 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import (DeclareLaunchArgument, IncludeLaunchDescription, Shutdown)
+from launch.actions import (DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, Shutdown)
 from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import (Command, FindExecutable, LaunchConfiguration,
@@ -38,6 +38,19 @@ def load_yaml(package_name, file_path):
             return yaml.safe_load(file)
     except EnvironmentError:  # parent of IOError, OSError *and* WindowsError where available
         return None
+
+
+def validate_launch_args(context):
+    use_isaac_sim = LaunchConfiguration('use_isaac_sim').perform(context).lower() == 'true'
+    use_fake_hardware = LaunchConfiguration('use_fake_hardware').perform(context).lower() == 'true'
+    robot_ip = LaunchConfiguration('robot_ip').perform(context).strip()
+
+    if not use_isaac_sim and not use_fake_hardware and not robot_ip:
+        raise RuntimeError(
+            "robot_ip must be set when use_isaac_sim:=false and use_fake_hardware:=false"
+        )
+
+    return []
 
 
 def generate_launch_description():
@@ -125,7 +138,13 @@ def generate_launch_description():
                                      '/MoveItSimpleControllerManager',
     }
 
-    trajectory_execution = {
+    trajectory_execution_default = {
+        'moveit_manage_controllers': True,
+        'trajectory_execution.allowed_execution_duration_scaling': 1.2,
+        'trajectory_execution.allowed_goal_duration_margin': 0.5,
+        'trajectory_execution.allowed_start_tolerance': 0.01,
+    }
+    trajectory_execution_isaac = {
         'moveit_manage_controllers': True,
         'trajectory_execution.allowed_execution_duration_scaling': 1.2,
         'trajectory_execution.allowed_goal_duration_margin': 0.5,
@@ -143,11 +162,22 @@ def generate_launch_description():
         robot_description,
         robot_description_semantic,
         kinematics_yaml,
-        joint_limits_yaml,
         ompl_planning_pipeline_config,
-        trajectory_execution,
+        trajectory_execution_default,
         planning_scene_monitor_parameters,
     ]
+    common_move_group_params_isaac = common_move_group_params.copy()
+    common_move_group_params_isaac.insert(3, joint_limits_yaml)
+    common_move_group_params_isaac[5] = trajectory_execution_isaac
+
+    use_non_isaac_with_gripper = PythonExpression(
+        ["'true' if '", load_gripper, "' == 'true' and '", use_isaac_sim, "' == 'false' else 'false'"])
+    use_non_isaac_no_gripper = PythonExpression(
+        ["'true' if '", load_gripper, "' == 'false' and '", use_isaac_sim, "' == 'false' else 'false'"])
+    use_isaac_with_gripper = PythonExpression(
+        ["'true' if '", load_gripper, "' == 'true' and '", use_isaac_sim, "' == 'true' else 'false'"])
+    use_isaac_no_gripper = PythonExpression(
+        ["'true' if '", load_gripper, "' == 'false' and '", use_isaac_sim, "' == 'true' else 'false'"])
 
     # Start the actual move_group node/action server
     run_move_group_node = Node(
@@ -155,14 +185,28 @@ def generate_launch_description():
         executable='move_group',
         output='screen',
         parameters=common_move_group_params + [moveit_controllers_with_gripper],
-        condition=IfCondition(load_gripper),
+        condition=IfCondition(use_non_isaac_with_gripper),
     )
     run_move_group_node_no_gripper = Node(
         package='moveit_ros_move_group',
         executable='move_group',
         output='screen',
         parameters=common_move_group_params + [moveit_controllers_no_gripper],
-        condition=UnlessCondition(load_gripper),
+        condition=IfCondition(use_non_isaac_no_gripper),
+    )
+    run_move_group_node_isaac = Node(
+        package='moveit_ros_move_group',
+        executable='move_group',
+        output='screen',
+        parameters=common_move_group_params_isaac + [moveit_controllers_with_gripper],
+        condition=IfCondition(use_isaac_with_gripper),
+    )
+    run_move_group_node_isaac_no_gripper = Node(
+        package='moveit_ros_move_group',
+        executable='move_group',
+        output='screen',
+        parameters=common_move_group_params_isaac + [moveit_controllers_no_gripper],
+        condition=IfCondition(use_isaac_no_gripper),
     )
 
     # RViz
@@ -180,8 +224,23 @@ def generate_launch_description():
             robot_description_semantic,
             ompl_planning_pipeline_config,
             kinematics_yaml,
+        ],
+        condition=UnlessCondition(use_isaac_sim),
+    )
+    rviz_node_isaac = Node(
+        package='rviz2',
+        executable='rviz2',
+        name='rviz2',
+        output='log',
+        arguments=['-d', rviz_full_config],
+        parameters=[
+            robot_description,
+            robot_description_semantic,
+            ompl_planning_pipeline_config,
+            kinematics_yaml,
             joint_limits_yaml,
         ],
+        condition=IfCondition(use_isaac_sim),
     )
 
     # Publish TF
@@ -334,10 +393,14 @@ def generate_launch_description():
          fake_sensor_commands_arg,
          load_gripper_arg,
          db_arg,
+         OpaqueFunction(function=validate_launch_args),
          rviz_node,
+         rviz_node_isaac,
          robot_state_publisher,
          run_move_group_node,
          run_move_group_node_no_gripper,
+         run_move_group_node_isaac,
+         run_move_group_node_isaac_no_gripper,
          ros2_control_node,
          ros2_control_node_fake,
          ros2_control_node_isaac,
