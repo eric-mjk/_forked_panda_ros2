@@ -202,6 +202,7 @@ def generate_launch_description():
             kinematics_yaml,
             joint_limits_yaml,
         ],
+        condition=IfCondition(LaunchConfiguration('rviz')),
     )
 
     # Publish TF
@@ -347,6 +348,9 @@ def generate_launch_description():
         default_value='false',
         description="Fake sensor commands. Only valid when '{}' is true".format(
             use_fake_hardware_parameter_name))
+    rviz_arg = DeclareLaunchArgument(
+        'rviz', default_value='true', description='Launch RViz2'
+    )
     gripper_launch_file = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([PathJoinSubstitution(
             [FindPackageShare('franka_gripper'), 'launch', 'gripper.launch.py'])]),
@@ -361,6 +365,7 @@ def generate_launch_description():
          fake_sensor_commands_arg,
          load_gripper_arg,
          db_arg,
+         rviz_arg,
          rviz_node,
          robot_state_publisher,
          run_move_group_node,
