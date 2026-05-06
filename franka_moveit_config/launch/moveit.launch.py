@@ -131,6 +131,12 @@ def generate_launch_description():
         'moveit_controller_manager': 'moveit_simple_controller_manager'
                                      '/MoveItSimpleControllerManager',
     }
+    moveit_controllers_with_gripper_isaac = {
+        'moveit_simple_controller_manager': load_yaml(
+            'franka_moveit_config', 'config/panda_controllers_isaac.yaml'),
+        'moveit_controller_manager': 'moveit_simple_controller_manager'
+                                     '/MoveItSimpleControllerManager',
+    }
     moveit_controllers_no_gripper = {
         'moveit_simple_controller_manager': load_yaml(
             'franka_moveit_config', 'config/panda_controllers_no_gripper.yaml'),
@@ -180,12 +186,26 @@ def generate_launch_description():
         ["'true' if '", load_gripper, "' == 'false' and '", use_isaac_sim, "' == 'true' else 'false'"])
 
     # Start the actual move_group node/action server
+    use_isaac_with_gripper = PythonExpression(
+        ["'true' if '", use_isaac_sim, "'.lower() == 'true' and '",
+         load_gripper, "'.lower() == 'true' else 'false'"])
+    use_non_isaac_with_gripper = PythonExpression(
+        ["'true' if '", use_isaac_sim, "'.lower() == 'false' and '",
+         load_gripper, "'.lower() == 'true' else 'false'"])
+
     run_move_group_node = Node(
         package='moveit_ros_move_group',
         executable='move_group',
         output='screen',
         parameters=common_move_group_params + [moveit_controllers_with_gripper],
         condition=IfCondition(use_non_isaac_with_gripper),
+    )
+    run_move_group_node_isaac = Node(
+        package='moveit_ros_move_group',
+        executable='move_group',
+        output='screen',
+        parameters=common_move_group_params + [moveit_controllers_with_gripper_isaac],
+        condition=IfCondition(use_isaac_with_gripper),
     )
     run_move_group_node_no_gripper = Node(
         package='moveit_ros_move_group',
@@ -240,7 +260,7 @@ def generate_launch_description():
             kinematics_yaml,
             joint_limits_yaml,
         ],
-        condition=IfCondition(use_isaac_sim),
+        condition=IfCondition(LaunchConfiguration('rviz')),
     )
 
     # Publish TF
@@ -328,6 +348,13 @@ def generate_launch_description():
             arguments=['joint_state_broadcaster', '-c', '/controller_manager'],
             output='screen',
         ),
+        Node(
+            package='controller_manager',
+            executable='spawner',
+            arguments=['panda_gripper', '-c', '/controller_manager'],
+            output='screen',
+            condition=IfCondition(use_isaac_with_gripper),
+        ),
     ]
 
     # Warehouse mongodb server
@@ -379,12 +406,15 @@ def generate_launch_description():
         default_value='false',
         description="Fake sensor commands. Only valid when '{}' is true".format(
             use_fake_hardware_parameter_name))
+    rviz_arg = DeclareLaunchArgument(
+        'rviz', default_value='true', description='Launch RViz2'
+    )
     gripper_launch_file = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([PathJoinSubstitution(
             [FindPackageShare('franka_gripper'), 'launch', 'gripper.launch.py'])]),
         launch_arguments={'robot_ip': robot_ip,
                           use_fake_hardware_parameter_name: use_fake_hardware}.items(),
-        condition=IfCondition(load_gripper)
+        condition=IfCondition(use_non_isaac_with_gripper)
     )
     return LaunchDescription(
         [robot_arg,
@@ -393,11 +423,12 @@ def generate_launch_description():
          fake_sensor_commands_arg,
          load_gripper_arg,
          db_arg,
-         OpaqueFunction(function=validate_launch_args),
+         rviz_arg,
          rviz_node,
          rviz_node_isaac,
          robot_state_publisher,
          run_move_group_node,
+         run_move_group_node_isaac,
          run_move_group_node_no_gripper,
          run_move_group_node_isaac,
          run_move_group_node_isaac_no_gripper,
