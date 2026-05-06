@@ -260,7 +260,9 @@ def generate_launch_description():
             kinematics_yaml,
             joint_limits_yaml,
         ],
-        condition=IfCondition(LaunchConfiguration('rviz')),
+        condition=IfCondition(PythonExpression(
+            ["'true' if '", use_isaac_sim, "'.lower() == 'true' and '",
+             LaunchConfiguration('rviz'), "'.lower() == 'true' else 'false'"])),
     )
 
     # Publish TF
